@@ -10,10 +10,15 @@
 # - System-wide: /etc/credstor/config.yaml
 
 database:
-  # Database type: sqlite (recommended for personal use)
-  type: "sqlite"
+  # Database type: postgresql (recommended for production/shared use)
+  type: "postgresql"
   
-  # SQLite configuration
+  # PostgreSQL configuration
+  host: "localhost"
+  port: 5432
+  name: "credstor"
+  
+  # SQLite configuration (alternative for personal/development use)
   # Path supports user expansion: ~ for home directory, ${USER} for username
   path: "~/Library/Application Support/CredStor/data/credstor.db"  # macOS
   # path: "~/.local/share/credstor/credstor.db"  # Linux/Unix

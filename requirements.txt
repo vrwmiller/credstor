@@ -2,8 +2,8 @@
 # Removed: fastapi, uvicorn, pydantic for CLI-only approach
 
 # Database
-sqlalchemy==2.0.23
-# Removed sqlcipher3 due to build issues - using regular SQLite
+sqlalchemy==2.0.44
+psycopg[binary]==3.2.11
 alembic==1.13.1
 
 # Security & Cryptography

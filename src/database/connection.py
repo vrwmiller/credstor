@@ -16,11 +16,11 @@ from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
 
 try:
-    from ..utils.config import get_config
+    from ..utils.config import get_config, load_database_credentials, verify_database_authentication
     from .models import Base
 except ImportError:
     # Fallback for direct execution
-    from utils.config import get_config
+    from utils.config import get_config, load_database_credentials, verify_database_authentication
     from database.models import Base
 
 logger = logging.getLogger(__name__)
@@ -32,26 +32,47 @@ engine: Optional[Engine] = None
 
 def get_database_url() -> str:
     """
-    Construct database URL based on configuration.
+    Generate database connection URL with authentication.
     
     Returns:
-        Database URL string for SQLAlchemy
+        Database connection URL string
+        
+    Raises:
+        ValueError: If database configuration is invalid
+        FileNotFoundError: If database credentials are missing
+        PermissionError: If credential file permissions are incorrect
     """
     config = get_config()
     db_config = config.database
     
+    # Load database credentials from credstor.conf
+    try:
+        credentials = load_database_credentials()
+    except Exception as e:
+        logger.error(f"Failed to load database credentials: {e}")
+        raise
+    
     if db_config.type == "sqlite":
+        # For SQLite, still require authentication but use file path
+        if not credentials.is_valid():
+            raise ValueError("Database authentication required: invalid credentials")
+        
         # Ensure data directory exists
         db_path = db_config.path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
-        # Use regular SQLite for now (can add encryption back later)
+        # Use regular SQLite with authentication verification
+        logger.info(f"Database authentication verified for user: {credentials.username}")
         return f"sqlite:///{db_path}"
     
     elif db_config.type == "postgresql":
-        # PostgreSQL connection string
+        # PostgreSQL connection using credentials from credstor.conf
+        if not credentials.is_valid():
+            raise ValueError("Database authentication required: invalid credentials")
+            
+        # Use credentials from credstor.conf with psycopg3 driver
         return (
-            f"postgresql://{db_config.username}:{db_config.password}@"
+            f"postgresql+psycopg://{credentials.username}:{credentials.password}@"
             f"{db_config.host}:{db_config.port}/{db_config.name}"
         )
     
@@ -157,6 +178,20 @@ def init_database() -> None:
             bind=engine
         )
         
+        # Run database migrations
+        try:
+            from .migrations import migration_manager
+            logger.info("Running database migrations...")
+            
+            if migration_manager.migrate():
+                logger.info("Database migrations completed successfully")
+            else:
+                logger.warning("Some database migrations failed - check logs")
+        except ImportError:
+            logger.debug("Migration system not available")
+        except Exception as e:
+            logger.warning(f"Migration system error: {e}")
+        
         logger.info("Database initialization completed")
         
     except Exception as e:
@@ -231,10 +266,18 @@ def check_database_health() -> dict:
         "database_connected": False,
         "tables_exist": False,
         "encryption_working": False,
+        "authentication_working": False,
         "error": None
     }
     
     try:
+        # Test database authentication first
+        try:
+            health_status["authentication_working"] = verify_database_authentication()
+        except Exception as e:
+            logger.warning(f"Authentication check failed: {e}")
+            health_status["authentication_working"] = False
+        
         # Test basic connectivity
         from sqlalchemy import text
         with get_db() as db:
@@ -252,21 +295,21 @@ def check_database_health() -> dict:
             if "credentials" in tables:
                 health_status["tables_exist"] = True
         
-        # Test encryption (SQLite only)
+        # Test application-level encryption (database-agnostic)
         config = get_config()
-        if config.database.type == "sqlite":
-            with get_db() as db:
-                # For regular SQLite (not SQLCipher), just check if basic queries work
-                # TODO: Re-enable when we add SQLCipher back
-                # result = db.execute(text("PRAGMA cipher_version")).fetchone()
-                # if result:
-                #     health_status["encryption_working"] = True
-                
-                # For now, just mark as working since we can connect
+        # If we can connect and have valid config, encryption should work
+        if health_status["database_connected"]:
+            try:
+                # Test if we can load encryption key from config
+                try:
+                    from ..security.crypto import get_encryption_key_from_config
+                except ImportError:
+                    from security.crypto import get_encryption_key_from_config
+                get_encryption_key_from_config()
                 health_status["encryption_working"] = True
-        else:
-            # For other databases, assume encryption is working if connected
-            health_status["encryption_working"] = health_status["database_connected"]
+            except Exception as e:
+                logger.warning(f"Encryption test failed: {e}")
+                health_status["encryption_working"] = False
     
     except Exception as e:
         health_status["error"] = str(e)

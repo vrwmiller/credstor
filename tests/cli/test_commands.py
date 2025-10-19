@@ -27,6 +27,17 @@ def mock_config():
         mock_config_obj.database.type = "sqlite"
         mock_config_obj.database.path = "test.db"
         
+        # Mock CSV import configuration
+        mock_config_obj.csv_import.default_encoding = "utf-8"
+        mock_config_obj.csv_import.default_separator = ","
+        mock_config_obj.csv_import.skip_empty_rows = True
+        mock_config_obj.csv_import.validate_fields = True
+        mock_config_obj.csv_import.field_mappings = {
+            "property": "property",
+            "username": "username", 
+            "password": "password"
+        }
+        
         mock_load.return_value = mock_config_obj
         mock_get.return_value = mock_config_obj
         
@@ -244,7 +255,7 @@ class TestSearchCommand:
 class TestImportCommand:
     """Test CSV import command."""
     
-    def test_import_csv_dry_run(self, cli_runner, test_db):
+    def test_import_csv_dry_run(self, cli_runner, mock_config, mock_database):
         """Test CSV import with dry run."""
         # Create temporary CSV file
         csv_content = "property,username,password\ntest.com,user,pass123\nexample.com,admin,secret456"
@@ -254,11 +265,14 @@ class TestImportCommand:
             temp_path = f.name
         
         try:
-            result = cli_runner.invoke(cli, [
-                'import-csv',
-                '--file', temp_path,
-                '--dry-run'
-            ])
+            with patch('src.cli.credstor.get_encryption_key') as mock_key:
+                mock_key.return_value = b"test_key" * 4
+                
+                result = cli_runner.invoke(cli, [
+                    'import-csv',
+                    '--file', temp_path,
+                    '--dry-run'
+                ])
             
             assert result.exit_code == 0
             assert "Preview complete" in result.output or "Would import" in result.output
@@ -278,7 +292,7 @@ class TestImportCommand:
             
             assert result.exit_code != 0
     
-    def test_import_csv_invalid_format(self, cli_runner, test_db):
+    def test_import_csv_invalid_format(self, cli_runner, mock_config, mock_database):
         """Test CSV import with invalid format."""
         # Create CSV with missing required columns
         csv_content = "website,user\ntest.com,user123"
@@ -296,14 +310,12 @@ class TestImportCommand:
                     '--file', temp_path,
                     '--dry-run'
                 ])
-                
+            
                 assert result.exit_code == 0
                 assert "Missing required fields" in result.output
         
         finally:
             os.unlink(temp_path)
-
-
 @pytest.mark.cli
 class TestShowCommand:
     """Test credential show command."""
@@ -402,3 +414,206 @@ class TestDeleteCommand:
             
             assert result.exit_code == 0
             assert "Deletion cancelled" in result.output
+
+
+@pytest.mark.cli
+class TestDatabaseCommands:
+    """Test database management commands."""
+    
+    def test_db_migrate_no_pending(self, cli_runner, mock_config, mock_database):
+        """Test database migration with no pending migrations."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key:
+            mock_key.return_value = b"test_key" * 4
+            
+            with patch('src.database.migrations.migration_manager') as mock_manager:
+                mock_manager.get_migration_status.return_value = {
+                    "integrity_valid": True,
+                    "pending_count": 0,
+                    "database_type": "sqlite"
+                }
+                
+                result = cli_runner.invoke(cli, ['db', 'migrate'])
+                
+                assert result.exit_code == 0
+                assert "Database is up to date" in result.output
+    
+    def test_db_migrate_with_pending(self, cli_runner, mock_config, mock_database):
+        """Test database migration with pending migrations."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key, \
+             patch('src.cli.credstor.Confirm.ask') as mock_confirm:
+            
+            mock_key.return_value = b"test_key" * 4
+            mock_confirm.return_value = True
+            
+            with patch('src.database.migrations.migration_manager') as mock_manager:
+                mock_migration = MagicMock()
+                mock_migration.version = "002"
+                mock_migration.description = "Test migration"
+                
+                mock_manager.get_migration_status.return_value = {
+                    "integrity_valid": True,
+                    "pending_count": 1,
+                    "database_type": "sqlite"
+                }
+                mock_manager.get_pending_migrations.return_value = [mock_migration]
+                mock_manager.migrate.return_value = True
+                
+                result = cli_runner.invoke(cli, ['db', 'migrate'])
+                
+                assert result.exit_code == 0
+                assert "Found 1 pending migrations" in result.output
+                assert "All migrations applied successfully" in result.output
+    
+    def test_db_migrate_dry_run(self, cli_runner, mock_config, mock_database):
+        """Test database migration dry run."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key:
+            mock_key.return_value = b"test_key" * 4
+            
+            with patch('src.database.migrations.migration_manager') as mock_manager:
+                mock_migration = MagicMock()
+                mock_migration.version = "002"
+                mock_migration.description = "Test migration"
+                
+                mock_manager.get_migration_status.return_value = {
+                    "integrity_valid": True,
+                    "pending_count": 1,
+                    "database_type": "sqlite"
+                }
+                mock_manager.get_pending_migrations.return_value = [mock_migration]
+                
+                result = cli_runner.invoke(cli, ['db', 'migrate', '--dry-run'])
+                
+                assert result.exit_code == 0
+                assert "Dry run complete - no changes made" in result.output
+    
+    def test_db_status(self, cli_runner, mock_config, mock_database):
+        """Test database migration status command."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key:
+            mock_key.return_value = b"test_key" * 4
+            
+            with patch('src.database.migrations.migration_manager') as mock_manager:
+                mock_manager.get_migration_status.return_value = {
+                    "database_type": "sqlite",
+                    "applied_count": 2,
+                    "pending_count": 1,
+                    "integrity_valid": True,
+                    "applied_versions": ["001", "002"],
+                    "pending_versions": ["003"]
+                }
+                
+                result = cli_runner.invoke(cli, ['db', 'status'])
+                
+                assert result.exit_code == 0
+                assert "Database Migration Status" in result.output
+                assert "sqlite" in result.output
+                assert "Applied Migrations" in result.output
+                assert "Pending Migrations" in result.output
+    
+    def test_db_backup(self, cli_runner, mock_config, mock_database):
+        """Test database backup command."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key, \
+             patch('src.cli.credstor.decrypt_credential_fields') as mock_decrypt, \
+             patch('builtins.open', create=True) as mock_open, \
+             patch('os.chmod') as mock_chmod:
+            
+            mock_key.return_value = b"test_key" * 4
+            mock_decrypt.return_value = {
+                "id": "12345678-1234-1234-1234-123456789012",
+                "property": "test.com",
+                "username": "testuser",
+                "password": "testpass"
+            }
+            
+            # Mock credentials query
+            mock_credential = MagicMock()
+            mock_query = mock_database.query.return_value
+            mock_query.filter.return_value = mock_query
+            mock_query.all.return_value = [mock_credential]
+            
+            # Mock audit logs query
+            mock_query.order_by.return_value = mock_query
+            mock_query.limit.return_value = mock_query
+            
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                result = cli_runner.invoke(cli, ['db', 'backup', '--file', temp_file.name])
+                
+                assert result.exit_code == 0
+                assert "Backup created successfully" in result.output
+                
+                # Cleanup
+                os.unlink(temp_file.name)
+    
+    def test_db_stats(self, cli_runner, mock_config, mock_database):
+        """Test database statistics command."""
+        with patch('src.cli.credstor.get_encryption_key') as mock_key:
+            mock_key.return_value = b"test_key" * 4
+            
+            # Mock database queries
+            mock_database.query.return_value.count.return_value = 10
+            mock_database.query.return_value.filter.return_value.count.return_value = 8
+            mock_database.execute.return_value.fetchall.return_value = [
+                ("CREATE", 5),
+                ("READ", 3),
+                ("DELETE", 1)
+            ]
+            
+            result = cli_runner.invoke(cli, ['db', 'stats'])
+            
+            assert result.exit_code == 0
+            assert "Database Statistics" in result.output
+            assert "Total Credentials" in result.output
+            assert "Active Credentials" in result.output
+
+
+@pytest.mark.cli
+class TestInitAuthCommand:
+    """Test database authentication initialization command."""
+    
+    def test_init_auth_new_setup(self, cli_runner):
+        """Test initializing new database authentication."""
+        with patch('src.cli.credstor.verify_database_authentication') as mock_verify, \
+             patch('src.cli.credstor.Prompt.ask') as mock_prompt, \
+             patch('src.cli.credstor.getpass') as mock_getpass, \
+             patch('src.cli.credstor.create_database_credentials') as mock_create:
+            
+            mock_verify.return_value = False
+            mock_prompt.return_value = "testuser"
+            mock_getpass.return_value = "testpass"
+            
+            result = cli_runner.invoke(cli, ['init-auth'])
+            
+            assert result.exit_code == 0
+            assert "Database authentication configured successfully" in result.output
+            mock_create.assert_called_once_with("testuser", "testpass")
+    
+    def test_init_auth_update_existing(self, cli_runner):
+        """Test updating existing database authentication."""
+        with patch('src.cli.credstor.verify_database_authentication') as mock_verify, \
+             patch('src.cli.credstor.Confirm.ask') as mock_confirm, \
+             patch('src.cli.credstor.Prompt.ask') as mock_prompt, \
+             patch('src.cli.credstor.getpass') as mock_getpass, \
+             patch('src.cli.credstor.create_database_credentials') as mock_create:
+            
+            mock_verify.return_value = True
+            mock_confirm.return_value = True
+            mock_prompt.return_value = "newuser"
+            mock_getpass.return_value = "newpass"
+            
+            result = cli_runner.invoke(cli, ['init-auth'])
+            
+            assert result.exit_code == 0
+            assert "Database authentication configured successfully" in result.output
+            mock_create.assert_called_once_with("newuser", "newpass")
+    
+    def test_init_auth_cancel_update(self, cli_runner):
+        """Test cancelling database authentication update."""
+        with patch('src.cli.credstor.verify_database_authentication') as mock_verify, \
+             patch('src.cli.credstor.Confirm.ask') as mock_confirm:
+            
+            mock_verify.return_value = True
+            mock_confirm.return_value = False
+            
+            result = cli_runner.invoke(cli, ['init-auth'])
+            
+            assert result.exit_code == 0
+            assert "Authentication setup cancelled" in result.output

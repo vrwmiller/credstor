@@ -8,9 +8,12 @@ environment variables, and command-line arguments.
 import os
 import yaml
 import logging
+import getpass
+import base64
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from pathlib import Path
+from cryptography.fernet import Fernet
 
 from .user import get_user_config_dir, expand_user_path
 
@@ -18,6 +21,55 @@ logger = logging.getLogger(__name__)
 
 # Global configuration instance
 _config: Optional["Config"] = None
+
+
+@dataclass
+class DatabaseCredentials:
+    """Database authentication credentials stored separately from main config."""
+    username: str = ""
+    password: str = ""
+    auth_token: str = ""  # For token-based auth
+    
+    def is_valid(self) -> bool:
+        """Check if credentials are present."""
+        return bool(self.username and self.password)
+    
+    def validate_security(self) -> None:
+        """
+        Validate database credentials for security compliance.
+        
+        Raises:
+            ValueError: If credentials don't meet security requirements
+        """
+        if not self.username:
+            raise ValueError("Database username is required")
+        
+        if not self.password:
+            raise ValueError("Database password is required")
+        
+        # Password strength validation
+        if len(self.password) < 12:
+            raise ValueError("Database password must be at least 12 characters long")
+        
+        # Check for common weak passwords
+        weak_passwords = [
+            "password", "123456", "admin", "root", "user", "test",
+            "postgres", "postgresql", "credstor", "database"
+        ]
+        
+        password_lower = self.password.lower()
+        for weak_pass in weak_passwords:
+            if weak_pass in password_lower:
+                raise ValueError("Database password is too weak - avoid common passwords")
+        
+        # Username validation
+        if len(self.username) < 3:
+            raise ValueError("Database username must be at least 3 characters long")
+        
+        # Avoid default usernames
+        default_usernames = ["admin", "root", "user", "test", "postgres"]
+        if self.username.lower() in default_usernames:
+            logger.warning(f"Database username '{self.username}' is a default username - consider using a custom username for better security")
 
 
 @dataclass
@@ -216,7 +268,7 @@ def apply_environment_overrides(config_data: Dict[str, Any]) -> None:
 
 def validate_config(config: Config) -> None:
     """
-    Validate configuration settings.
+    Validate configuration settings with enhanced security checks.
     
     Args:
         config: Configuration to validate
@@ -233,15 +285,50 @@ def validate_config(config: Config) -> None:
     #     raise ValueError("SQLite requires an encryption key")
     
     if config.database.type == "postgresql":
+        # Enhanced PostgreSQL validation
         if not config.database.host or not config.database.name:
             raise ValueError("PostgreSQL requires host and database name")
+        
+        # Validate PostgreSQL connection parameters
+        if not (1 <= config.database.port <= 65535):
+            raise ValueError("PostgreSQL port must be between 1 and 65535")
+        
+        # Security checks for PostgreSQL
+        if config.database.host in ["0.0.0.0", "*"]:
+            logger.warning("PostgreSQL host configured to listen on all interfaces - ensure proper firewall rules")
+        
+        # Connection pool validation
+        if config.database.pool_size < 1:
+            raise ValueError("Database pool size must be at least 1")
+        
+        if config.database.max_overflow < 0:
+            raise ValueError("Database max overflow must be non-negative")
+        
+        if config.database.pool_size + config.database.max_overflow > 100:
+            logger.warning("Large database connection pool may impact performance")
     
-    # Security validation
+    # Enhanced security validation
     if config.security.salt_length < 16:
         raise ValueError("Salt length must be at least 16 bytes")
     
     if config.security.key_iterations < 10000:
         raise ValueError("Key iterations must be at least 10,000")
+    
+    # Validate cryptographic algorithms
+    valid_hash_algorithms = ["argon2", "scrypt", "pbkdf2"]
+    if config.security.password_hash_algorithm not in valid_hash_algorithms:
+        raise ValueError(f"Invalid password hash algorithm: {config.security.password_hash_algorithm}. "
+                        f"Must be one of: {', '.join(valid_hash_algorithms)}")
+    
+    valid_symmetric_algorithms = ["AES-256-GCM", "AES-256-CBC", "ChaCha20-Poly1305"]
+    if config.security.symmetric_algorithm not in valid_symmetric_algorithms:
+        raise ValueError(f"Invalid symmetric algorithm: {config.security.symmetric_algorithm}. "
+                        f"Must be one of: {', '.join(valid_symmetric_algorithms)}")
+    
+    valid_asymmetric_algorithms = ["Ed25519", "RSA-4096", "ECDSA-P384"]
+    if config.security.asymmetric_algorithm not in valid_asymmetric_algorithms:
+        raise ValueError(f"Invalid asymmetric algorithm: {config.security.asymmetric_algorithm}. "
+                        f"Must be one of: {', '.join(valid_asymmetric_algorithms)}")
     
     # Certificate paths (if client certificates required)
     if config.security.client_cert_required:
@@ -255,14 +342,38 @@ def validate_config(config: Config) -> None:
             if not os.path.exists(cert_file):
                 logger.warning(f"Certificate file not found: {cert_file}")
     
-    # API validation
+    # Enhanced API validation
     if not (1 <= config.api.port <= 65535):
         raise ValueError("API port must be between 1 and 65535")
+    
+    # Security checks for API
+    if config.api.host in ["0.0.0.0", "*"]:
+        logger.warning("API configured to listen on all interfaces - ensure proper firewall rules")
+    
+    if not config.api.ssl_enabled:
+        logger.warning("API SSL is disabled - credentials will be transmitted in plaintext")
+    
+    # Rate limiting validation
+    if config.api.rate_limit_requests < 1:
+        raise ValueError("Rate limit requests must be at least 1")
+    
+    if config.api.rate_limit_window < 1:
+        raise ValueError("Rate limit window must be at least 1 second")
+    
+    if config.api.rate_limit_requests > 10000:
+        logger.warning("Very high rate limit may allow abuse")
     
     # Logging validation
     log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if config.logging.level.upper() not in log_levels:
         raise ValueError(f"Invalid log level: {config.logging.level}")
+    
+    # Security logging checks
+    if not config.logging.log_failed_auth:
+        logger.warning("Failed authentication logging is disabled - security monitoring may be impaired")
+    
+    if not config.logging.log_data_access:
+        logger.warning("Data access logging is disabled - audit trails may be incomplete")
     
     logger.info("Configuration validation passed")
 
@@ -436,3 +547,204 @@ def reload_config(config_path: Optional[Path] = None) -> Config:
     global _config
     _config = None
     return load_config(config_path)
+
+
+def get_credstor_conf_path() -> Path:
+    """
+    Get the path to the credstor.conf file for database credentials.
+    
+    Returns:
+        Path to credstor.conf file
+    """
+    # Check if we're in a development environment (has src/ directory)
+    if Path("src").exists():
+        return Path("credstor.conf")
+    
+    # Production: use user config directory
+    user_config_dir = get_user_config_dir()
+    return user_config_dir / "credstor.conf"
+
+
+def load_database_credentials() -> DatabaseCredentials:
+    """
+    Load database credentials from credstor.conf file.
+    
+    Returns:
+        DatabaseCredentials object
+        
+    Raises:
+        FileNotFoundError: If credstor.conf doesn't exist
+        PermissionError: If file permissions are incorrect
+        ValueError: If credentials are invalid
+    """
+    conf_path = get_credstor_conf_path()
+    
+    if not conf_path.exists():
+        raise FileNotFoundError(
+            f"Database credentials file not found: {conf_path}\n"
+            f"Please create it with: credstor init-auth"
+        )
+    
+    # Check file permissions
+    file_mode = conf_path.stat().st_mode & 0o777
+    if file_mode != 0o400:
+        raise PermissionError(
+            f"Insecure permissions on {conf_path}: {oct(file_mode)}\n"
+            f"Please fix with: chmod 400 {conf_path}"
+        )
+    
+    try:
+        with open(conf_path, 'r', encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+        
+        if not data or 'database' not in data:
+            raise ValueError("Invalid credstor.conf format: missing 'database' section")
+        
+        db_data = data['database']
+        credentials = DatabaseCredentials(
+            username=db_data.get('username', ''),
+            password=db_data.get('password', ''),
+            auth_token=db_data.get('auth_token', '')
+        )
+        
+        if not credentials.is_valid():
+            raise ValueError("Invalid database credentials: username and password required")
+        
+        # Perform security validation only for production use
+        # Skip validation if we're in test mode (SQLite)
+        config = get_config()
+        if config.database.type == "postgresql":
+            credentials.validate_security()
+        
+        logger.debug(f"Database credentials loaded from {conf_path}")
+        return credentials
+        
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in {conf_path}: {e}")
+    except Exception as e:
+        raise ValueError(f"Failed to load database credentials: {e}")
+
+
+def create_database_credentials(username: str = None, password: str = None) -> None:
+    """
+    Create or update the credstor.conf file with database credentials.
+    
+    Args:
+        username: Database username (prompted if None)
+        password: Database password (prompted if None)
+    """
+    conf_path = get_credstor_conf_path()
+    
+    # Prompt for credentials if not provided
+    if username is None:
+        username = input("Database username: ").strip()
+        if not username:
+            raise ValueError("Database username is required")
+    
+    if password is None:
+        password = getpass.getpass("Database password: ").strip()
+        if not password:
+            raise ValueError("Database password is required")
+    
+    # Validate credentials before saving
+    temp_credentials = DatabaseCredentials(username=username, password=password)
+    temp_credentials.validate_security()
+    
+    # Create the credentials structure
+    credentials_data = {
+        'database': {
+            'username': username,
+            'password': password,
+            'auth_token': '',
+            'created_at': str(Path(__file__).stat().st_mtime)  # Simple timestamp
+        }
+    }
+    
+    try:
+        # Ensure parent directory exists
+        conf_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write credentials file
+        with open(conf_path, 'w', encoding='utf-8') as f:
+            yaml.dump(credentials_data, f, default_flow_style=False, indent=2)
+        
+        # Set secure permissions (0400 - read-only for owner)
+        conf_path.chmod(0o400)
+        
+        logger.info(f"Database credentials created at {conf_path}")
+        
+    except Exception as e:
+        logger.error(f"Failed to create database credentials: {e}")
+        raise
+
+
+def verify_database_authentication() -> bool:
+    """
+    Verify that database authentication is properly configured.
+    
+    Returns:
+        True if authentication is valid
+        
+    Raises:
+        FileNotFoundError: If credstor.conf doesn't exist
+        PermissionError: If file permissions are incorrect
+        ValueError: If configuration is invalid
+    """
+    try:
+        credentials = load_database_credentials()
+        config = get_config()
+        
+        # Validate configuration settings
+        validate_config(config)
+        
+        # Additional PostgreSQL-specific validations
+        if config.database.type == "postgresql":
+            validate_postgresql_config(config.database, credentials)
+        
+        logger.info(f"Database authentication verified for user: {credentials.username}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Database authentication verification failed: {e}")
+        raise
+
+
+def validate_postgresql_config(db_config: DatabaseConfig, credentials: DatabaseCredentials) -> None:
+    """
+    Validate PostgreSQL-specific configuration and security settings.
+    
+    Args:
+        db_config: Database configuration
+        credentials: Database credentials
+        
+    Raises:
+        ValueError: If PostgreSQL configuration is invalid
+    """
+    # Connection parameter validation
+    if not db_config.host:
+        raise ValueError("PostgreSQL host is required")
+    
+    if not db_config.name:
+        raise ValueError("PostgreSQL database name is required")
+    
+    # Security checks
+    if db_config.host == "localhost" and not db_config.port == 5432:
+        logger.info(f"Using non-standard PostgreSQL port: {db_config.port}")
+    
+    # SSL/Security recommendations
+    logger.info("For production use, ensure PostgreSQL is configured with:")
+    logger.info("- SSL/TLS encryption enabled")
+    logger.info("- Connection limited to specific IP addresses")
+    logger.info("- Regular password rotation")
+    logger.info("- Database-level encryption if handling sensitive data")
+    
+    # Database name validation
+    if db_config.name in ["postgres", "template0", "template1"]:
+        logger.warning(f"Using system database '{db_config.name}' is not recommended for application data")
+    
+    # Connection pool validation
+    total_connections = db_config.pool_size + db_config.max_overflow
+    if total_connections > 50:
+        logger.warning(f"Large connection pool ({total_connections}) may impact database performance")
+    
+    logger.debug("PostgreSQL configuration validation completed")

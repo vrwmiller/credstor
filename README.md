@@ -17,10 +17,11 @@ A secure, encrypted personal credential store with CLI-only interface for maximu
 ┌─────────────────┐    ┌─────────────────┐
 │   CLI Interface │────│    Database     │
 │                 │    │   (Encrypted)   │
-│ • Commands      │    │ • SQLite        │
-│ • CSV Import    │    │ • AES-256-GCM   │
-│ • Config        │    │ • Audit Logs    │
-│ • Validation    │    │ • Security Logs │
+│ • Commands      │    │ • PostgreSQL    │
+│ • CSV Import    │    │ • SQLite        │
+│ • Config        │    │ • AES-256-GCM   │
+│ • Validation    │    │ • Audit Logs    │
+│ • Authentication│    │ • Security Logs │
 └─────────────────┘    └─────────────────┘
 ```
 
@@ -41,8 +42,52 @@ CredStor stores the following credential types:
 ### Prerequisites
 
 - Python 3.9+
-- SQLite (included with Python)
+- SQLite (default) or PostgreSQL (for shared/production use)
 - Virtual environment (recommended)
+
+### Database Setup
+
+#### SQLite (Default - Recommended for Personal Use)
+
+SQLite is the default database and perfect for personal credential storage:
+- **No installation required** (included with Python)
+- **No server setup** - just a local database file
+- **Automatic creation** - database file created on first run
+- **Encrypted storage** - all data encrypted with AES-256-GCM
+- **Perfect for single-user** personal credential management
+
+Simply run the setup script and choose SQLite (default option).
+
+#### PostgreSQL (Alternative for Shared/Production Use)
+
+For shared environments or production deployments, PostgreSQL is supported:
+
+1. Install PostgreSQL:
+
+```bash
+# macOS with Homebrew
+brew install postgresql
+
+# Ubuntu/Debian
+sudo apt install postgresql postgresql-contrib
+
+# Start PostgreSQL service
+brew services start postgresql  # macOS
+sudo systemctl start postgresql  # Linux
+```
+
+2. Create database and user:
+
+```bash
+# Connect to PostgreSQL as superuser
+psql postgres
+
+# Create database and user
+CREATE DATABASE credstor;
+CREATE USER credstor_user WITH PASSWORD 'your_secure_password';
+GRANT ALL PRIVILEGES ON DATABASE credstor TO credstor_user;
+\q
+```
 
 ### Installation
 
@@ -76,8 +121,14 @@ pip install -r requirements.txt
 5. Configure database connection:
 
 ```bash
+# Copy configuration template
 cp config/config.example.yaml config/config.yaml
-# Edit config.yaml with your database credentials
+
+# For PostgreSQL (default): Set up database authentication
+credstor init-auth
+
+# For SQLite: Edit config.yaml to change database type to "sqlite"
+# Edit config/config.yaml with your preferences
 chmod 400 config/config.yaml
 ```
 
@@ -86,6 +137,12 @@ chmod 400 config/config.yaml
 #### CLI Commands
 
 ```bash
+# Database setup and authentication
+credstor init-auth    # Set up database authentication
+
+# Check system health
+credstor health       # Verify database connectivity and encryption
+
 # Add a new credential
 credstor add --property "github.com" --username "myuser" --password
 
@@ -96,7 +153,7 @@ credstor search --property "github"
 credstor list
 
 # Import from CSV
-credstor import --file credentials.csv --separator ","
+credstor import-csv --file credentials.csv --separator ","
 
 # Export to CSV (encrypted)
 credstor export --file backup.csv
@@ -106,28 +163,65 @@ credstor export --file backup.csv
 
 Configuration file located at `config/config.yaml` (permissions: 0400):
 
+### PostgreSQL Configuration (Default)
+
+```yaml
+database:
+  type: postgresql
+  host: localhost
+  port: 5432
+  name: credstor
+  # Credentials stored separately in ~/.credstor/credstor.conf (permissions: 0400)
+  
+security:
+  master_password_required: true
+  key_iterations: 100000
+  
+logging:
+  level: INFO
+  file: ~/.credstor/logs/app.log
+```
+
+### SQLite Configuration (Alternative)
+
 ```yaml
 database:
   type: sqlite
   path: ~/.credstor/credentials.db
+  encryption_key: <base64-encoded>
   
 security:
-  encryption_key: <base64-encoded>
   master_password_required: true
+  key_iterations: 100000
   
 logging:
   level: INFO
-  file: /var/log/credstor/app.log
+  file: ~/.credstor/logs/app.log
 ```
+
+### Database Authentication
+
+For PostgreSQL, credentials are stored separately in `~/.credstor/credstor.conf`:
+
+```ini
+[database]
+username = credstor_user
+password = your_secure_password
+```
+
+This file is automatically created with restricted permissions (0400) during setup.
 
 ## 🛡️ Security Best Practices
 
-- **Master Password**: Required for database access
+- **Database Authentication**: Separate authentication required for database access
+- **Master Password**: Required for application-level access
+- **Dual Encryption**: Database-level + application-level encryption
 - **Encryption Keys**: Generated using secure random methods
 - **File Permissions**: Config files restricted to owner only (0400)
 - **Memory Management**: Secrets cleared from memory after use
 - **Audit Trail**: All operations logged (without exposing secrets)
 - **Input Validation**: All inputs sanitized and validated
+- **No Network Exposure**: CLI-only interface eliminates remote attack vectors
 
 ## 📁 Project Structure
 
@@ -176,11 +270,14 @@ pytest tests/security/
 
 ## 🔐 Security Considerations
 
+- **Dual Authentication**: Database-level authentication + application master password
 - **Application Encryption**: All sensitive data encrypted with AES-256-GCM
+- **Database Security**: PostgreSQL provides additional access controls and encryption
 - **Key Management**: Encryption keys derived securely from master password
-- **Access Control**: Master password required for all operations
+- **Access Control**: Multi-layer access control (database + application)
 - **Audit Logging**: Monitor all credential access (without exposing secrets)
 - **No Network Exposure**: CLI-only interface eliminates remote attacks
+- **Credential Separation**: Database credentials stored separately from application config
 
 ## 📋 License
 

@@ -21,7 +21,7 @@ from rich import print as rprint
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.config import load_config, get_config
+from utils.config import load_config, get_config, create_database_credentials, verify_database_authentication
 from database.connection import init_database, get_db, check_database_health
 from database.models import Credential, AuditLog
 from security.crypto import (
@@ -150,12 +150,13 @@ def cli(ctx, config, verbose):
         rprint(f"[red]Error loading configuration: {e}[/red]")
         sys.exit(1)
     
-    # Initialize database
-    try:
-        init_database()
-    except Exception as e:
-        rprint(f"[red]Error initializing database: {e}[/red]")
-        sys.exit(1)
+    # Initialize database (skip for init-auth command)
+    if ctx.invoked_subcommand != 'init-auth':
+        try:
+            init_database()
+        except Exception as e:
+            rprint(f"[red]Error initializing database: {e}[/red]")
+            sys.exit(1)
     
     # Store context
     ctx.ensure_object(dict)
@@ -174,16 +175,33 @@ def health():
     table.add_column("Details")
     
     # Database connectivity
+    try:
+        config = get_config()
+        db_type = config.database.type.lower()
+        if db_type == "sqlite":
+            connection_details = "Local database connection"
+        elif db_type == "postgresql":
+            connection_details = "PostgreSQL server connection"
+        else:
+            connection_details = f"{db_type.upper()} connection"
+    except:
+        connection_details = "Database connection"
+    
     status = "[green]✓ Connected[/green]" if health_status["database_connected"] else "[red]✗ Failed[/red]"
-    table.add_row("Database", status, "SQLite connection")
+    table.add_row("Database", status, connection_details)
     
     # Tables existence
     status = "[green]✓ Present[/green]" if health_status["tables_exist"] else "[red]✗ Missing[/red]"
     table.add_row("Tables", status, "Database schema")
     
-    # Encryption
+    # Authentication
+    auth_working = health_status.get("authentication_working", True)  # Default to True for backward compatibility
+    status = "[green]✓ Working[/green]" if auth_working else "[red]✗ Failed[/red]"
+    table.add_row("Authentication", status, "Database authentication")
+    
+    # Application-level encryption
     status = "[green]✓ Working[/green]" if health_status["encryption_working"] else "[red]✗ Failed[/red]"
-    table.add_row("Encryption", status, "SQLCipher encryption")
+    table.add_row("Data Encryption", status, "Application-level encryption")
     
     # Configuration
     try:
@@ -565,6 +583,457 @@ def delete(credential_id):
         error_msg = f"Failed to delete credential: {e}"
         rprint(f"[red]Error: {error_msg}[/red]")
         log_audit_event("DELETE", f"Failed to delete credential {credential_id}", success=False, error=str(e))
+
+
+@cli.command("init-auth")
+def init_auth():
+    """Initialize database authentication credentials."""
+    rprint("[bold]Database Authentication Setup[/bold]")
+    rprint("This will create or update database credentials in credstor.conf")
+    rprint("")
+    
+    try:
+        # Check if credentials already exist
+        if verify_database_authentication():
+            if not Confirm.ask("Database authentication is already configured. Update credentials?"):
+                rprint("[yellow]Authentication setup cancelled.[/yellow]")
+                return
+        
+        # Prompt for credentials
+        rprint("[blue]Please provide database credentials:[/blue]")
+        username = Prompt.ask("Database username")
+        
+        if not username:
+            rprint("[red]Error: Username is required[/red]")
+            return
+        
+        password = getpass("Database password: ")
+        if not password:
+            rprint("[red]Error: Password is required[/red]")
+            return
+        
+        # Create credentials
+        create_database_credentials(username, password)
+        
+        rprint("[green]Database authentication configured successfully![/green]")
+        rprint("[yellow]Note: credstor.conf has been created with secure permissions (400)[/yellow]")
+        
+    except Exception as e:
+        rprint(f"[red]Error setting up authentication: {e}[/red]")
+        sys.exit(1)
+
+
+@cli.group("db")
+def database_commands():
+    """Database management commands."""
+    pass
+
+
+@database_commands.command("migrate")
+@click.option('--dry-run', is_flag=True, help='Show what migrations would be applied without applying them')
+def migrate_cmd(dry_run):
+    """Apply pending database migrations."""
+    from ..database.migrations import migration_manager
+    
+    try:
+        rprint("[bold]Database Migration[/bold]")
+        
+        # Check current status
+        status = migration_manager.get_migration_status()
+        
+        if not status["integrity_valid"]:
+            rprint("[red]❌ Migration integrity check failed - aborting[/red]")
+            return
+        
+        if status["pending_count"] == 0:
+            rprint("[green]✅ Database is up to date - no pending migrations[/green]")
+            return
+        
+        rprint(f"[blue]Database type: {status['database_type']}[/blue]")
+        rprint(f"[yellow]Found {status['pending_count']} pending migrations:[/yellow]")
+        
+        pending_migrations = migration_manager.get_pending_migrations()
+        for migration in pending_migrations:
+            rprint(f"  • {migration.version}: {migration.description}")
+        
+        if dry_run:
+            rprint("\n[blue]Dry run complete - no changes made[/blue]")
+            return
+        
+        if not Confirm.ask("\n[yellow]Apply these migrations?[/yellow]"):
+            rprint("Migration cancelled")
+            return
+        
+        # Apply migrations
+        rprint("\n[blue]Applying migrations...[/blue]")
+        success = migration_manager.migrate()
+        
+        if success:
+            rprint("[green]✅ All migrations applied successfully[/green]")
+            log_audit_event("MIGRATION", f"Applied {status['pending_count']} database migrations")
+        else:
+            rprint("[red]❌ Migration failed - check logs for details[/red]")
+            log_audit_event("MIGRATION", "Database migration failed", success=False)
+        
+    except Exception as e:
+        error_msg = f"Migration command failed: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
+        log_audit_event("MIGRATION", "Migration command failed", success=False, error=str(e))
+
+
+@database_commands.command("status")
+def migration_status():
+    """Show current migration status."""
+    from ..database.migrations import migration_manager
+    
+    try:
+        status = migration_manager.get_migration_status()
+        
+        rprint("[bold]Database Migration Status[/bold]")
+        
+        table = Table(title="Migration Information")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Value", style="green")
+        
+        table.add_row("Database Type", status["database_type"])
+        table.add_row("Applied Migrations", str(status["applied_count"]))
+        table.add_row("Pending Migrations", str(status["pending_count"]))
+        table.add_row("Integrity Valid", "✅ Yes" if status["integrity_valid"] else "❌ No")
+        
+        console.print(table)
+        
+        if status["applied_versions"]:
+            rprint("\n[bold]Applied Migrations:[/bold]")
+            for version in status["applied_versions"]:
+                rprint(f"  ✅ {version}")
+        
+        if status["pending_versions"]:
+            rprint("\n[bold]Pending Migrations:[/bold]")
+            for version in status["pending_versions"]:
+                rprint(f"  📋 {version}")
+        
+        if not status["integrity_valid"]:
+            rprint("\n[red]⚠️  Migration integrity check failed![/red]")
+            rprint("[red]This indicates that applied migrations have been modified.[/red]")
+            rprint("[red]Please verify your migration files and database state.[/red]")
+        
+    except Exception as e:
+        error_msg = f"Failed to get migration status: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
+
+
+@database_commands.command("rollback")
+@click.argument('version')
+@click.option('--force', is_flag=True, help='Force rollback without confirmation')
+def rollback_cmd(version, force):
+    """Rollback a specific migration."""
+    from ..database.migrations import migration_manager
+    
+    try:
+        rprint(f"[bold]Rollback Migration {version}[/bold]")
+        
+        # Find the migration
+        migration = next((m for m in migration_manager.migrations if m.version == version), None)
+        if not migration:
+            rprint(f"[red]❌ Migration {version} not found[/red]")
+            return
+        
+        # Check if it's applied
+        applied_versions = migration_manager.get_applied_migrations()
+        if version not in applied_versions:
+            rprint(f"[yellow]⚠️  Migration {version} is not currently applied[/yellow]")
+            return
+        
+        rprint(f"[yellow]Migration to rollback:[/yellow]")
+        rprint(f"  Version: {migration.version}")
+        rprint(f"  Description: {migration.description}")
+        
+        if not force:
+            rprint("\n[red]⚠️  WARNING: Rolling back migrations can cause data loss![/red]")
+            if not Confirm.ask("[red]Are you sure you want to proceed?[/red]"):
+                rprint("Rollback cancelled")
+                return
+        
+        # Perform rollback
+        rprint(f"\n[blue]Rolling back migration {version}...[/blue]")
+        success = migration_manager.rollback_migration(version)
+        
+        if success:
+            rprint(f"[green]✅ Migration {version} rolled back successfully[/green]")
+            log_audit_event("MIGRATION_ROLLBACK", f"Rolled back migration {version}")
+        else:
+            rprint(f"[red]❌ Rollback failed - check logs for details[/red]")
+            log_audit_event("MIGRATION_ROLLBACK", f"Failed to rollback migration {version}", success=False)
+        
+    except Exception as e:
+        error_msg = f"Rollback command failed: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
+        log_audit_event("MIGRATION_ROLLBACK", f"Rollback command failed for {version}", success=False, error=str(e))
+
+
+@database_commands.command("backup")
+@click.option('--file', '-f', required=True, type=click.Path(), help='Backup file path')
+@click.option('--include-deleted', is_flag=True, help='Include soft-deleted credentials in backup')
+def backup_db(file, include_deleted):
+    """Create a backup of the database."""
+    import json
+    from datetime import datetime
+    
+    try:
+        config = get_config()
+        backup_data = {
+            "metadata": {
+                "created_at": datetime.utcnow().isoformat(),
+                "database_type": config.database.type,
+                "version": "1.0",
+                "include_deleted": include_deleted
+            },
+            "credentials": [],
+            "audit_logs": [],
+            "security_events": []
+        }
+        
+        rprint(f"[blue]Creating backup to {file}...[/blue]")
+        
+        # Backup credentials
+        with get_db() as db:
+            query = db.query(Credential)
+            if not include_deleted:
+                query = query.filter(Credential.is_active == True)
+            
+            credentials = query.all()
+            
+            for credential in credentials:
+                # Decrypt fields for backup
+                decrypted_data = decrypt_credential_fields(credential)
+                backup_data["credentials"].append(decrypted_data)
+            
+            # Backup audit logs (last 1000 entries)
+            audit_logs = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(1000).all()
+            for log in audit_logs:
+                backup_data["audit_logs"].append({
+                    "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+                    "event_type": log.event_type,
+                    "event_description": log.event_description,
+                    "credential_id": str(log.credential_id) if log.credential_id else None,
+                    "success": log.success,
+                    "error_message": log.error_message
+                })
+        
+        # Write backup file
+        with open(file, 'w') as f:
+            json.dump(backup_data, f, indent=2, default=str)
+        
+        # Set secure permissions
+        import os
+        os.chmod(file, 0o600)
+        
+        rprint(f"[green]✅ Backup created successfully[/green]")
+        rprint(f"  Credentials: {len(backup_data['credentials'])}")
+        rprint(f"  Audit logs: {len(backup_data['audit_logs'])}")
+        rprint(f"  File: {file}")
+        
+        log_audit_event("BACKUP", f"Database backup created: {file}")
+        
+    except Exception as e:
+        error_msg = f"Backup failed: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
+        log_audit_event("BACKUP", "Database backup failed", success=False, error=str(e))
+
+
+@database_commands.command("restore")
+@click.option('--file', '-f', required=True, type=click.Path(exists=True), help='Backup file to restore')
+@click.option('--force', is_flag=True, help='Force restore without confirmation')
+@click.option('--clear-existing', is_flag=True, help='Clear existing data before restore')
+def restore_db(file, force, clear_existing):
+    """Restore database from backup file."""
+    import json
+    
+    try:
+        rprint(f"[blue]Loading backup from {file}...[/blue]")
+        
+        # Load backup data
+        with open(file, 'r') as f:
+            backup_data = json.load(f)
+        
+        # Validate backup format
+        required_keys = ["metadata", "credentials"]
+        if not all(key in backup_data for key in required_keys):
+            rprint("[red]❌ Invalid backup file format[/red]")
+            return
+        
+        metadata = backup_data["metadata"]
+        credentials_count = len(backup_data["credentials"])
+        
+        rprint(f"[yellow]Backup Information:[/yellow]")
+        rprint(f"  Created: {metadata.get('created_at', 'Unknown')}")
+        rprint(f"  Database type: {metadata.get('database_type', 'Unknown')}")
+        rprint(f"  Credentials: {credentials_count}")
+        rprint(f"  Include deleted: {metadata.get('include_deleted', False)}")
+        
+        if not force:
+            if clear_existing:
+                rprint("\n[red]⚠️  WARNING: This will delete all existing data![/red]")
+            else:
+                rprint("\n[yellow]⚠️  This will add to existing data (duplicates may occur)[/yellow]")
+            
+            if not Confirm.ask("[yellow]Continue with restore?[/yellow]"):
+                rprint("Restore cancelled")
+                return
+        
+        # Clear existing data if requested
+        if clear_existing:
+            rprint("[blue]Clearing existing data...[/blue]")
+            with get_db() as db:
+                db.query(Credential).delete()
+                db.commit()
+        
+        # Restore credentials
+        rprint("[blue]Restoring credentials...[/blue]")
+        restored_count = 0
+        error_count = 0
+        
+        for cred_data in backup_data["credentials"]:
+            try:
+                # Prepare credential data
+                credential_data = {
+                    'property': cred_data['property'],
+                    'username': cred_data['username'],
+                    'password': cred_data.get('password', ''),
+                    'api_token': cred_data.get('api_token'),
+                    'public_key': cred_data.get('public_key'),
+                    'private_key': cred_data.get('private_key'),
+                    'notes': cred_data.get('notes')
+                }
+                
+                # Remove None values
+                credential_data = {k: v for k, v in credential_data.items() if v is not None}
+                
+                # Check for duplicates unless clearing existing data
+                if not clear_existing:
+                    with get_db() as db:
+                        existing = db.query(Credential).filter(
+                            Credential.property == credential_data['property'],
+                            Credential.username == credential_data['username'],
+                            Credential.is_active == True
+                        ).first()
+                        
+                        if existing:
+                            error_count += 1
+                            continue
+                
+                # Encrypt and save
+                encrypted_data = encrypt_credential_fields(credential_data)
+                if not encrypted_data:
+                    error_count += 1
+                    continue
+                
+                credential = Credential(
+                    property=credential_data['property'],
+                    username=credential_data['username'],
+                    **{k: v for k, v in encrypted_data.items() if k.endswith('_encrypted')}
+                )
+                
+                with get_db() as db:
+                    db.add(credential)
+                    db.commit()
+                
+                restored_count += 1
+                
+            except Exception as e:
+                rprint(f"[red]Failed to restore credential {cred_data.get('property', 'unknown')}: {e}[/red]")
+                error_count += 1
+        
+        rprint(f"\n[green]✅ Restore completed[/green]")
+        rprint(f"  Restored: {restored_count} credentials")
+        rprint(f"  Errors/skipped: {error_count}")
+        
+        log_audit_event("RESTORE", f"Database restored from {file}: {restored_count} credentials")
+        
+    except Exception as e:
+        error_msg = f"Restore failed: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
+        log_audit_event("RESTORE", "Database restore failed", success=False, error=str(e))
+
+
+@database_commands.command("stats")
+def database_stats():
+    """Show database statistics."""
+    try:
+        rprint("[bold]Database Statistics[/bold]")
+        
+        with get_db() as db:
+            # Credential statistics
+            total_credentials = db.query(Credential).count()
+            active_credentials = db.query(Credential).filter(Credential.is_active == True).count()
+            deleted_credentials = total_credentials - active_credentials
+            
+            # Recent activity
+            from datetime import datetime, timedelta
+            last_week = datetime.utcnow() - timedelta(days=7)
+            recent_credentials = db.query(Credential).filter(
+                Credential.created_at >= last_week,
+                Credential.is_active == True
+            ).count()
+            
+            # Audit statistics
+            total_audit_logs = db.query(AuditLog).count()
+            recent_audit_logs = db.query(AuditLog).filter(
+                AuditLog.timestamp >= last_week
+            ).count()
+            
+            # Most common event types
+            from sqlalchemy import func, text
+            event_stats = db.execute(text("""
+                SELECT event_type, COUNT(*) as count 
+                FROM audit_log 
+                GROUP BY event_type 
+                ORDER BY count DESC 
+                LIMIT 5
+            """)).fetchall()
+        
+        # Display statistics
+        table = Table(title="Database Statistics")
+        table.add_column("Metric", style="cyan", no_wrap=True)
+        table.add_column("Value", style="green", justify="right")
+        
+        table.add_row("Total Credentials", str(total_credentials))
+        table.add_row("Active Credentials", str(active_credentials))
+        table.add_row("Deleted Credentials", str(deleted_credentials))
+        table.add_row("Recent Credentials (7 days)", str(recent_credentials))
+        table.add_row("Total Audit Logs", str(total_audit_logs))
+        table.add_row("Recent Audit Logs (7 days)", str(recent_audit_logs))
+        
+        console.print(table)
+        
+        # Event type statistics
+        if event_stats:
+            rprint("\n[bold]Most Common Events:[/bold]")
+            event_table = Table()
+            event_table.add_column("Event Type", style="cyan")
+            event_table.add_column("Count", style="green", justify="right")
+            
+            for event_type, count in event_stats:
+                event_table.add_row(event_type, str(count))
+            
+            console.print(event_table)
+        
+        # Database configuration
+        config = get_config()
+        rprint(f"\n[bold]Configuration:[/bold]")
+        rprint(f"  Database Type: {config.database.type}")
+        if config.database.type == "postgresql":
+            rprint(f"  Host: {config.database.host}")
+            rprint(f"  Port: {config.database.port}")
+            rprint(f"  Database: {config.database.name}")
+        else:
+            rprint(f"  Path: {config.database.path}")
+        
+        log_audit_event("STATS", "Database statistics viewed")
+        
+    except Exception as e:
+        error_msg = f"Failed to get database statistics: {e}"
+        rprint(f"[red]Error: {error_msg}[/red]")
 
 
 if __name__ == '__main__':

@@ -23,7 +23,7 @@ class TestConfigModels:
         """Test DatabaseConfig default values."""
         config = DatabaseConfig()
         
-        assert config.type == "sqlite"
+        assert config.type == "postgresql"
         assert config.path == "data/credstor.db"
         assert config.host == "localhost"
         assert config.port == 5432

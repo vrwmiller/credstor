@@ -99,9 +99,9 @@ class TestHealthCommand:
             result = cli_runner.invoke(cli, ['health'])
             
             assert result.exit_code == 0
-            assert "✓ Connected" in result.output
-            assert "✓ Present" in result.output
-            assert "✓ Working" in result.output
+            assert "OK Connected" in result.output
+            assert "OK Present" in result.output
+            assert "OK Working" in result.output
     
     def test_health_check_failure(self, cli_runner, mock_config, mock_database):
         """Test health check with failures."""
@@ -119,7 +119,7 @@ class TestHealthCommand:
             result = cli_runner.invoke(cli, ['health'])
             
             assert result.exit_code == 0
-            assert "✗ Failed" in result.output
+            assert "X Failed" in result.output
             assert "Database connection failed" in result.output
 
 
@@ -154,7 +154,7 @@ class TestAddCommand:
             ])
             
             assert result.exit_code == 0
-            assert "✓ Credential added successfully" in result.output
+            assert "Credential added successfully" in result.output
             assert "test.com" in result.output
             assert "testuser" in result.output
     
@@ -389,7 +389,7 @@ class TestDeleteCommand:
             ])
             
             assert result.exit_code == 0
-            assert "✓ Credential deleted successfully" in result.output
+            assert "Credential deleted successfully" in result.output
             assert mock_credential.is_active is False
     
     def test_delete_credential_cancelled(self, cli_runner, mock_config, mock_database):

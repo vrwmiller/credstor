@@ -229,7 +229,7 @@ else
     TEST_EXIT_CODE=$?
     
     if [[ $TEST_EXIT_CODE -eq 0 ]]; then
-        print_status "All tests passed! ✅"
+        print_status "All tests passed!"
         
         if [[ "$HTML" == true ]]; then
             print_status "HTML coverage report generated in htmlcov/"
@@ -239,7 +239,7 @@ else
             fi
         fi
     else
-        print_error "Some tests failed! ❌"
+        print_error "Some tests failed!"
         exit $TEST_EXIT_CODE
     fi
 fi

@@ -206,10 +206,10 @@ def health():
     # Configuration
     try:
         config = get_config()
-        status = "[green]✓ Loaded[/green]"
+        status = "[green]OK Loaded[/green]"
         details = f"Database: {config.database.type}"
     except Exception as e:
-        status = "[red]✗ Failed[/red]"
+        status = "[red]X Failed[/red]"
         details = str(e)
     
     table.add_row("Configuration", status, details)
@@ -270,7 +270,7 @@ def add(property, username, password, api_token, public_key, private_key, notes)
             db.commit()
             db.refresh(credential)
         
-        rprint(f"[green]✓ Credential added successfully[/green]")
+        rprint(f"[green]Credential added successfully[/green]")
         rprint(f"ID: {credential.id}")
         rprint(f"Property: {property}")
         rprint(f"Username: {username}")
@@ -318,8 +318,8 @@ def search(property, username, limit):
         
         for credential in credentials:
             # Only show metadata, not actual secrets
-            has_password = "✓" if credential.password_encrypted else "✗"
-            has_token = "✓" if credential.api_token_encrypted else "✗"
+            has_password = "Yes" if credential.password_encrypted else "No"
+            has_token = "Yes" if credential.api_token_encrypted else "No"
             created = credential.created_at.strftime("%Y-%m-%d") if credential.created_at else "Unknown"
             
             table.add_row(
@@ -574,7 +574,7 @@ def delete(credential_id):
             credential.is_active = False
             db.commit()
         
-        rprint(f"[green]✓ Credential deleted successfully[/green]")
+        rprint(f"[green]Credential deleted successfully[/green]")
         
         # Log the deletion
         log_audit_event("DELETE", f"Deleted credential {credential.property}", str(credential.id))

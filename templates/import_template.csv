@@ -1,0 +1,24 @@
+# CredStor CSV Import Template
+# 
+# This template shows the supported fields for CSV import.
+# Only property, username, and password are required for basic import.
+# Additional fields can be added as needed.
+#
+# Usage:
+#   1. Copy this file and add your data
+#   2. Use the CLI: credstor import --file your_data.csv
+#
+# Field Descriptions:
+#   - property: Website, service, or application name (required)
+#   - username: Login username or email (required)
+#   - password: Password or passphrase (required)
+#   - api_token: API keys or tokens (optional)
+#   - public_key: SSH/GPG public keys (optional)
+#   - private_key: SSH/GPG private keys (optional)
+#   - notes: Additional notes or comments (optional)
+
+property,username,password,api_token,public_key,private_key,notes
+github.com,myuser,mypassword123,ghp_xxxxxxxxxxxx,,,"Personal GitHub account"
+example.com,user@email.com,secretpass,,,,
+aws.amazon.com,aws-user,awspassword,AKIAXXXXXXXXXXXXXXXX,,,
+ssh-server,root,,,,ssh-ed25519 AAAAC3...,,"Server SSH access"

@@ -1,0 +1,95 @@
+# CredStor Configuration Template
+# Copy this file to config.yaml and customize for your environment
+# IMPORTANT: Set file permissions to 0400 after configuration
+# 
+# You can place this file in:
+# - Current directory: config/config.yaml
+# - User config directory: ~/.config/credstor/config.yaml (Linux/Unix)
+#                          ~/Library/Application Support/CredStor/config.yaml (macOS)
+#                          %APPDATA%/CredStor/config.yaml (Windows)
+# - System-wide: /etc/credstor/config.yaml
+
+database:
+  # Database type: sqlite (recommended for personal use)
+  type: "sqlite"
+  
+  # SQLite configuration
+  # Path supports user expansion: ~ for home directory, ${USER} for username
+  path: "~/Library/Application Support/CredStor/data/credstor.db"  # macOS
+  # path: "~/.local/share/credstor/credstor.db"  # Linux/Unix
+  # path: "%LOCALAPPDATA%/CredStor/data/credstor.db"  # Windows
+  
+  encryption_key: "CHANGE_THIS_TO_A_SECURE_BASE64_KEY"
+  
+  # Connection settings
+  pool_size: 5
+  max_overflow: 10
+  echo: false  # Set to true for SQL debugging
+
+security:
+  # Master password settings
+  master_password_required: true
+  password_hash_algorithm: "argon2"
+  
+  # Encryption settings
+  symmetric_algorithm: "AES-256-GCM"
+  asymmetric_algorithm: "Ed25519"
+  
+  # Certificate-based authentication
+  client_cert_required: true
+  client_cert_path: "certs/client.pem"
+  client_key_path: "certs/client.key"
+  ca_cert_path: "certs/ca.pem"
+  
+  # Key derivation
+  salt_length: 32
+  key_iterations: 100000
+
+api:
+  # Server settings
+  host: "127.0.0.1"
+  port: 8080
+  
+  # Security settings
+  rate_limit_requests: 100
+  rate_limit_window: 60  # seconds
+  
+  # SSL/TLS settings (for production)
+  ssl_enabled: false
+  ssl_cert_path: "certs/server.pem"
+  ssl_key_path: "certs/server.key"
+
+logging:
+  # Logging configuration
+  level: "INFO"
+  format: "json"
+  
+  # Log files
+  app_log: "logs/credstor.log"
+  security_log: "logs/security.log"
+  audit_log: "logs/audit.log"
+  
+  # Rotation settings
+  max_file_size: "10MB"
+  backup_count: 5
+  
+  # Security logging
+  log_failed_auth: true
+  log_successful_auth: false
+  log_data_access: true
+
+csv_import:
+  # Default CSV import settings
+  default_separator: ","
+  default_quote_char: "\""
+  default_encoding: "utf-8"
+  
+  # Field mappings (customize based on your CSV structure)
+  field_mappings:
+    property: "property"  # Column name in CSV
+    username: "username"
+    password: "password"
+    
+  # Import validation
+  skip_empty_rows: true
+  validate_fields: true

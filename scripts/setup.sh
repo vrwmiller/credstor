@@ -108,12 +108,29 @@ with open('config/.encryption_key', 'w') as f:
     f.write(key)
 
 print(f'Generated encryption key for user: {username}')
-print(f'Encryption key: {key}')
-print(f'Please update your config.yaml with this encryption key')
+print(f'Encryption key saved to: config/.encryption_key')
 "
     chmod 400 config/.encryption_key
     print_status "Encryption key generated and saved to config/.encryption_key"
-    print_warning "Update your config.yaml with this encryption key"
+    
+    # Auto-update the config file with the generated key
+    if [[ -f "config/config.yaml" ]]; then
+        print_step "Updating config.yaml with generated encryption key..."
+        encryption_key=$(cat config/.encryption_key)
+        
+        # Use sed to replace the placeholder with the actual key
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS sed syntax
+            sed -i '' "s/CHANGE_THIS_TO_A_SECURE_BASE64_KEY/$encryption_key/" config/config.yaml
+        else
+            # Linux sed syntax
+            sed -i "s/CHANGE_THIS_TO_A_SECURE_BASE64_KEY/$encryption_key/" config/config.yaml
+        fi
+        
+        print_status "Config file updated with encryption key automatically"
+    else
+        print_warning "Config file not found - please copy config.example.yaml to config.yaml first"
+    fi
 else
     print_status "Encryption key already exists"
 fi
@@ -124,9 +141,11 @@ chmod 400 config/config.yaml 2>/dev/null || print_warning "Could not set config.
 chmod 700 data logs certs 2>/dev/null || print_warning "Could not set directory permissions"
 print_status "File permissions set"
 
-# Generate self-signed certificates for development
-print_step "Generating development certificates..."
-if [[ ! -f "certs/ca.pem" ]]; then
+# Generate development certificates (optional for CLI-only usage)
+print_step "Setting up certificates (optional)..."
+if [[ ! -f "certs/ca.pem" ]] && command -v openssl &> /dev/null; then
+    print_status "OpenSSL found - generating development certificates"
+    
     # Generate CA key and certificate
     openssl genpkey -algorithm Ed25519 -out certs/ca.key 2>/dev/null || {
         print_warning "OpenSSL Ed25519 not available, using RSA"
@@ -154,11 +173,13 @@ if [[ ! -f "certs/ca.pem" ]]; then
     rm -f certs/client.csr
     
     # Set certificate permissions
-    chmod 400 certs/*.key certs/*.pem
+    chmod 400 certs/*.key certs/*.pem 2>/dev/null
     
-    print_status "Development certificates generated"
-else
+    print_status "Development certificates generated (optional for CLI-only usage)"
+elif [[ -f "certs/ca.pem" ]]; then
     print_status "Certificates already exist"
+else
+    print_warning "OpenSSL not found - certificates not generated (not required for CLI-only usage)"
 fi
 
 # Initialize database
@@ -194,13 +215,15 @@ echo "CredStor setup completed successfully!"
 echo ""
 echo "Next steps:"
 echo "1. Activate the virtual environment: source venv/bin/activate"
-echo "2. Edit config/config.yaml with your settings"
-echo "3. Update the encryption key in config.yaml from config/.encryption_key"
+echo "2. Review config/config.yaml (encryption key has been set automatically)"
+echo "3. Optionally customize database path and logging settings in config.yaml"
 echo "4. Test the CLI: ./venv/bin/credstor --help"
+echo "5. Check system health: ./venv/bin/credstor health"
 echo ""
 echo "For security:"
-echo "- Keep config/config.yaml and config/.encryption_key secure (0400 permissions)"
-echo "- Never commit these files to version control"
-echo "- Use strong master passwords"
+echo "- Config files have secure permissions (0400) - keep them safe"
+echo "- Never commit config/config.yaml or config/.encryption_key to version control"
+echo "- Use strong master passwords when prompted"
+echo "- Your encryption key is stored securely in config/.encryption_key"
 echo ""
 print_status "Setup complete! Happy secure credential management!"

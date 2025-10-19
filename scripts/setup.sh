@@ -5,8 +5,8 @@
 
 set -e  # Exit on any error
 
-echo "🔐 CredStor Setup Script"
-echo "======================="
+echo "CredStor Setup Script"
+echo "====================="
 
 # Colors for output
 RED='\033[0;31m'
@@ -190,18 +190,17 @@ else
 fi
 
 echo ""
-echo "🎉 CredStor setup completed successfully!"
+echo "CredStor setup completed successfully!"
 echo ""
 echo "Next steps:"
 echo "1. Activate the virtual environment: source venv/bin/activate"
 echo "2. Edit config/config.yaml with your settings"
 echo "3. Update the encryption key in config.yaml from config/.encryption_key"
 echo "4. Test the CLI: ./venv/bin/credstor --help"
-echo "5. Start the API server: python src/api/server.py"
 echo ""
 echo "For security:"
 echo "- Keep config/config.yaml and config/.encryption_key secure (0400 permissions)"
 echo "- Never commit these files to version control"
 echo "- Use strong master passwords"
 echo ""
-print_status "Setup complete! Happy secure credential management! 🔐"
+print_status "Setup complete! Happy secure credential management!"
